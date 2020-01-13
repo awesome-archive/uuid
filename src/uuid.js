@@ -1,7 +1,4 @@
 /*
- * uuid
- * 2019-07
- * 
  * by netnr
  * 
  * https://gitee.com/netnr/uuid
@@ -85,7 +82,41 @@
                     src = "https://gitee.com/api/v5/repos" + uuid.defaultRepos;
                     break;
             }
-            uuid.fetch(this, src, callback, 'json', function () {
+
+            var cacheRepos = uuid.cacheGet(that.name, src);
+            uuid.fetch(this, src, function (data) {
+                //仓库未更新
+                var nochange = cacheRepos.ok && cacheRepos.value.updated_at == data.updated_at;
+                var udata = localStorage.getItem("uuid_" + that.name);
+                if (udata && udata != "") {
+                    var ujson = JSON.parse(udata);
+                    for (var i in ujson) {
+                        if (i.indexOf("__create_time__") == 0) {
+                            if (i.indexOf("/contents/") >= 0 || i.indexOf("/git/trees/master?recursive=1") >= 0) {
+                                //未更新，延长缓存过期；已更新，设置超出缓存时间
+                                ujson[i] = nochange ? new Date().valueOf() : 946656000000;
+                            }
+                        }
+                    }
+                    localStorage.setItem("uuid_" + that.name, JSON.stringify(ujson));
+                }
+
+                if (nochange) {
+                    var udata = localStorage.getItem("uuid_" + that.name);
+                    if (udata && udata != "") {
+                        var ujson = JSON.parse(udata);
+                        for (var i in ujson) {
+                            if (i.indexOf("__create_time__") == 0) {
+                                if (i.indexOf("/contents/") >= 0 || i.indexOf("/git/trees/master?recursive=1") >= 0) {
+                                    ujson[i] = new Date().valueOf();
+                                }
+                            }
+                        }
+                        localStorage.setItem("uuid_" + that.name, JSON.stringify(ujson));
+                    }
+                }
+                callback(data);
+            }, 'json', function () {
                 that.showMessage("Not found");
             })
         },
@@ -141,10 +172,10 @@
                 })
 
                 if (data.length) {
-                    var morefork = "https://github.com/" + that.nr + "/network/members";
+                    var morefork = "https://github.com" + that.nr + "/network/members";
                     switch (that.githost) {
                         case "gitee":
-                            morefork = "https://gitee.com/" + that.nr + "/members";
+                            morefork = "https://gitee.com" + that.nr + "/members";
                             break;
                     }
 
@@ -171,7 +202,7 @@
                     return;
                 }
 
-                document.title += "-" + data.login;
+                document.title += " (" + data.login + ")";
 
                 var nhref = "https://" + that.githost + ".com/";
 
@@ -390,6 +421,9 @@
                 that.jumpnode.innerHTML = "";
             }
         },
+        se: function (s) {
+            return s.replace(/"/g, "&quot;").replace(/'/g, "");
+        },
         //构建
         build: function () {
             var that = this;
@@ -467,9 +501,17 @@
                                     //满足Markdown的链接格式，有效行
                                     if (/\[.*?\]\(http.*?\)/.test(line)) {
                                         //A标签显示的文本、图标、链接
-                                        var atext, aicon, ahref;
+                                        var atext, aicon, ahref, atitle = '';
                                         line.replace(/\(http.*?\)/, function (x) {
-                                            ahref = x.substring(1, x.length - 1).trim();
+                                            if (/\(http.*?\ /.test(x)) {
+                                                line.replace(/\(http.*?\ /, function (y) {
+                                                    ahref = y.substring(1).trim();
+                                                    atitle = x.replace(y, "");
+                                                    atitle = atitle.substring(1, atitle.length - 2).trim();
+                                                })
+                                            } else {
+                                                ahref = x.substring(1, x.length - 1).trim();
+                                            }
                                         })
                                         line.replace(/\[.*?\]/, function (x) {
                                             atext = x.substring(1, x.length - 1).trim();
@@ -482,20 +524,28 @@
                                             var hrefs = ahref.split('/');
                                             aicon = hrefs[0] + "//" + hrefs[2] + "/favicon.ico";
                                         }
-                                        ahtm.push('<a href="' + ahref + '"><img data-src="' + aicon + '" src="' + uuid.defaultFavicon + '"/> ' + atext + '</a>');
+                                        ahtm.push('<a href="' + ahref + '" title="' + that.se(atitle) + '"><img data-src="' + aicon + '" src="' + uuid.defaultFavicon + '"/> ' + atext + '</a>');
                                     }
                                 })
                                 card.lastChild.innerHTML = ahtm.join('');
 
+                                //链接数
+                                var itemtotal = document.createElement("span");
+                                itemtotal.className = "badge text-muted ml-2";
+                                itemtotal.innerHTML = "( " + ahtm.length + " )";
+                                card.firstChild.appendChild(itemtotal);
+
                                 //加载图标
                                 var cardimg = card.lastChild.getElementsByTagName('img');
                                 for (var i = 0; i < cardimg.length; i++) {
-                                    var img = new Image();
-                                    img.that = cardimg[i];
-                                    img.onload = function () { this.that.src = this.src; };
-                                    var iconsrc = img.that.getAttribute('data-src');
-                                    //代理http图片请求为https
-                                    img.src = iconsrc.replace("http://", "https://proxy.zme.ink/");
+                                    var ci = cardimg[i], iconsrc = ci.getAttribute('data-src');
+                                    //仅加载https
+                                    if (iconsrc.indexOf("http://") == -1) {
+                                        var img = new Image();
+                                        img.that = ci;
+                                        img.onload = function () { this.that.src = this.src; };
+                                        img.src = iconsrc;
+                                    }
                                 }
                             }, 'json');
                         }
@@ -649,8 +699,8 @@
         var udata = localStorage.getItem("uuid_" + name);
         if (udata && udata != "") {
             var ujson = JSON.parse(udata);
-            //缓存30分钟
-            result.ok = new Date().valueOf() - ujson["__create_time__" + key] < 1000 * 60 * 30;
+            //缓存3天
+            result.ok = new Date().valueOf() - ujson["__create_time__" + key] < 1000 * 3600 * 24 * 3;
             //值
             result.value = ujson[key];
         }
@@ -684,7 +734,6 @@
     }
 
     /**
-     * /**
      * 请求
      * @param {any} uu uuid对象
      * @param {any} src 链接
